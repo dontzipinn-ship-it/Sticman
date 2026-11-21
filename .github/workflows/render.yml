@@ -1,0 +1,312 @@
+name: Render stickman fight
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Write project files
+        run: |
+          mkdir -p src scripts public/sfx
+          cat > package.json <<'EOF_FILE'
+          {
+            "name": "stickman-fight",
+            "version": "1.0.0",
+            "private": true,
+            "scripts": {
+              "dev": "remotion studio src/index.ts",
+              "build": "remotion render src/index.ts StickmanFight out/stickman-fight.mp4",
+              "sfx": "python3 scripts/gen_audio.py"
+            },
+            "dependencies": {
+              "@remotion/cli": "^4.0.250",
+              "@remotion/google-fonts": "^4.0.250",
+              "react": "18.3.1",
+              "react-dom": "18.3.1",
+              "remotion": "^4.0.250"
+            },
+            "devDependencies": {
+              "@types/react": "18.3.3",
+              "typescript": "5.5.4"
+            }
+          }
+          EOF_FILE
+          cat > tsconfig.json <<'EOF_FILE'
+          {"compilerOptions":{"target":"ES2020","module":"commonjs","jsx":"react-jsx","strict":true,"noEmit":true,"skipLibCheck":true,"esModuleInterop":true,"moduleResolution":"node"},"include":["src"]}
+          EOF_FILE
+          cat > src/index.ts <<'EOF_FILE'
+          import {registerRoot} from 'remotion';
+          import {Root} from './Root';
+          registerRoot(Root);
+          EOF_FILE
+          cat > src/Root.tsx <<'EOF_FILE'
+          import {Composition} from 'remotion';
+          import {Fight} from './Fight';
+
+          export const Root = () => (
+            <Composition id="StickmanFight" component={Fight} durationInFrames={660} fps={30} width={1080} height={1920} />
+          );
+          EOF_FILE
+          cat > src/stickman.tsx <<'EOF_FILE'
+          import React from 'react';
+
+          export type Pose = {x: number; y: number; l: number; rot: number; a: [number, number]; b: [number, number]; c: [number, number]; d: [number, number]};
+          export const GROUND = 1400;
+          const TL = 125, UA = 72, FA = 70, TH = 92, SH = 92, HR = 40;
+          const rad = (d: number) => (d * Math.PI) / 180;
+          type V = [number, number];
+          const vec = (a: number, len: number, dir: number): V => [Math.sin(rad(a)) * len * dir, Math.cos(rad(a)) * len];
+
+          type Props = {pose: Pose; dir: 1 | -1; color: string; dark: string; band: string; t: number; glow?: string; opacity?: number};
+
+          // Sudut diukur dari "lurus ke bawah", positif = ke arah hadap. Siku/lutut relatif terhadap tulang atas.
+          export const Stickman: React.FC<Props> = ({pose, dir, color, dark, band, t, glow, opacity = 1}) => {
+            const foot = (q: V) => Math.cos(rad(q[0])) * TH + Math.cos(rad(q[0] + q[1])) * SH;
+            const hipY = GROUND - Math.max(foot(pose.c), foot(pose.d)) - pose.y; // kaki selalu menapak tanah
+            const S: V = [Math.sin(rad(pose.l)) * TL * dir, -Math.cos(rad(pose.l)) * TL];
+            const Hd: V = [S[0] + Math.sin(rad(pose.l)) * (HR + 8) * dir, S[1] - Math.cos(rad(pose.l)) * (HR + 8)];
+            const limb = (o: V, q: V, l1: number, l2: number) => {
+              const p1 = vec(q[0], l1, dir);
+              const k: V = [o[0] + p1[0], o[1] + p1[1]];
+              const p2 = vec(q[0] + q[1], l2, dir);
+              const e: V = [k[0] + p2[0], k[1] + p2[1]];
+              return {pts: `${o[0]},${o[1]} ${k[0]},${k[1]} ${e[0]},${e[1]}`, end: e};
+            };
+            const arm = (q: V) => limb(S, q, UA, FA);
+            const leg = (q: V) => limb([0, 0], q, TH, SH);
+            const b = arm(pose.b), d = leg(pose.d), c = leg(pose.c), a = arm(pose.a);
+            const w = Math.sin(t / 2.2);
+            const bx = Hd[0] - dir * HR * 0.95, by = Hd[1] - 10;
+
+            return (
+              <g
+                transform={`translate(${pose.x} ${hipY}) rotate(${-(pose.rot % 360) * dir})`}
+                opacity={opacity}
+                fill="none"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{filter: glow ? `drop-shadow(0 0 16px ${glow})` : undefined}}
+              >
+                <polyline points={b.pts} stroke={dark} strokeWidth={15} />
+                <polyline points={d.pts} stroke={dark} strokeWidth={16} />
+                <circle cx={b.end[0]} cy={b.end[1]} r={11} fill={dark} stroke="none" />
+                <line x1={0} y1={0} x2={S[0]} y2={S[1]} stroke={color} strokeWidth={19} />
+                <polyline points={`${bx},${by} ${bx - dir * (30 + 10 * w)},${by + 10 + 6 * Math.cos(t / 2)} ${bx - dir * (60 + 14 * Math.sin(t / 2.2 + 1))},${by + 6 + 10 * Math.cos(t / 2 + 1)}`} stroke={band} strokeWidth={7} />
+                <circle cx={Hd[0]} cy={Hd[1]} r={HR} fill="#0a0716" stroke={color} strokeWidth={12} />
+                <line x1={Hd[0] - HR + 2} y1={Hd[1] - 14} x2={Hd[0] + HR - 2} y2={Hd[1] - 14} stroke={band} strokeWidth={9} />
+                <line x1={Hd[0] + dir * 6} y1={Hd[1] - 2} x2={Hd[0] + dir * 28} y2={Hd[1] + 7} stroke="#fff" strokeWidth={6} />
+                <polyline points={c.pts} stroke={color} strokeWidth={17} />
+                <polyline points={a.pts} stroke={color} strokeWidth={16} />
+                <circle cx={a.end[0]} cy={a.end[1]} r={12} fill={color} stroke="none" />
+              </g>
+            );
+          };
+          EOF_FILE
+          cat > src/choreo.ts <<'EOF_FILE'
+          import {GROUND, Pose} from './stickman';
+
+          export type Key = {t: number; p: Pose; e?: 'o' | 'i' | 'io'};
+          export type GameEvent = {t: number; x: number; y: number; v: 'A' | 'B' | 'both' | null; power: number; dmg: number; sfx: string; label?: string; star?: boolean; col?: string};
+
+          // ---------- Pose preset (a/b = lengan depan/belakang, c/d = kaki depan/belakang) ----------
+          const P = (o: Partial<Pose>): Pose => ({x: 0, y: 0, l: 8, rot: 0, a: [35, 115], b: [20, 120], c: [25, -55], d: [-25, 45], ...o});
+          const idle = (x: number) => P({x});
+          const wind = (x: number) => P({x, l: -6, a: [8, 130], c: [18, -50], d: [-32, 52]});
+          const jab = (x: number) => P({x, l: 28, a: [100, -8], c: [42, -72], d: [-42, 32]});
+          const kickW = (x: number) => P({x, l: -4, a: [45, 95], b: [-20, 100], c: [45, -115], d: [-6, 8]});
+          const kick = (x: number) => P({x, l: -22, a: [60, 60], b: [-50, 90], c: [88, -4], d: [-4, 6]});
+          const block = (x: number) => P({x, l: 16, a: [40, 140], b: [30, 140], c: [30, -60], d: [-28, 52]});
+          const hit = (x: number) => P({x, l: -28, a: [-35, 40], b: [-50, 60], c: [8, -30], d: [-22, 28]});
+          const duck = (x: number) => P({x, l: 34, a: [40, 120], b: [30, 120], c: [62, -105], d: [-48, 96]});
+          const upW = (x: number) => P({x, l: 22, a: [30, 100], b: [-5, 65], c: [45, -90], d: [-45, 60]});
+          const upper = (x: number) => P({x, l: 2, y: 22, a: [30, 100], b: [95, 50], c: [22, -30], d: [-18, 22]});
+          const fly = (x: number, y: number, rot: number) => P({x, y, rot, l: -35, a: [-70, 25], b: [-95, 15], c: [45, -25], d: [-55, 25]});
+          const down = (x: number, y = -178) => P({x, y, rot: 90, l: 0, a: [-30, 10], b: [-20, 10], c: [10, -10], d: [-10, 10]});
+          const wounded = (x: number) => P({x, l: 40, a: [8, 22], b: [0, 30], c: [56, -102], d: [-42, 98]});
+          const rage = (x: number) => P({x, l: 14, a: [25, 125], b: [15, 125], c: [30, -65], d: [-30, 60]});
+          const crouch = (x: number) => P({x, l: 48, a: [-30, 70], b: [-50, 80], c: [60, -100], d: [-55, 100]});
+          const dashKick = (x: number, y: number) => P({x, y, l: -30, a: [-40, 60], b: [-70, 40], c: [96, -4], d: [-42, 62]});
+          const victory = (x: number) => P({x, l: 0, a: [172, 0], b: [150, 12], c: [14, -20], d: [-14, 22]});
+
+          const K = (t: number, p: Pose, e?: Key['e']): Key => ({t, p, e});
+
+          // ---------- Keyframe (waktu "sim", sebelum slow-mo) ----------
+          export const A_KEYS: Key[] = [
+            K(0, idle(380)), K(90, idle(410)), K(98, wind(410)), K(112, jab(468), 'o'), K(122, jab(472)), K(136, idle(440)), K(146, idle(440)),
+            K(150, hit(430), 'o'), K(160, hit(396), 'o'), K(172, idle(420)),
+            K(180, duck(446), 'o'), K(192, duck(450)), K(198, upW(478)), K(204, upper(500), 'o'), K(214, upper(506)), K(226, idle(470)),
+            K(248, wind(330)), K(262, jab(339), 'o'), K(264, jab(339)), K(270, hit(290), 'o'), K(282, idle(320)),
+            K(288, wind(330)), K(294, jab(480), 'o'), K(300, wind(470)), K(306, jab(484), 'o'), K(312, wind(476)), K(318, jab(490), 'o'), K(326, wind(480)), K(336, wind(480)),
+            K(338, fly(485, 0, 0), 'o'), K(346, fly(400, 120, 40)), K(356, fly(310, 40, 60)), K(362, fly(250, 0, 20)), K(368, wounded(235), 'o'), K(416, wounded(235)),
+            K(426, rage(240), 'o'), K(446, rage(240)), K(452, crouch(235)), K(462, dashKick(430, 150)), K(468, dashKick(585, 150), 'o'),
+            K(480, dashKick(625, 100)), K(490, dashKick(650, 20)), K(494, duck(655), 'o'), K(506, idle(640)), K(520, idle(620)), K(530, victory(610), 'o'), K(700, victory(610)),
+          ];
+
+          export const B_KEYS: Key[] = [
+            K(0, idle(700)), K(90, idle(670)), K(112, idle(670)), K(116, hit(702), 'o'), K(128, hit(710)), K(132, idle(690)),
+            K(138, kickW(665)), K(146, kick(642), 'o'), K(158, kick(640)), K(168, idle(655)),
+            K(178, wind(655)), K(186, jab(650), 'o'), K(204, jab(640)),
+            K(206, fly(648, 0, 0), 'o'), K(212, fly(700, 190, 50), 'o'), K(222, fly(760, 70, 75)), K(230, fly(790, 0, 15)), K(236, wounded(800), 'o'),
+            K(252, wind(760)), K(262, jab(741), 'o'), K(264, jab(741)), K(270, hit(790), 'o'), K(282, idle(765)),
+            K(286, block(765)), K(322, block(740)), K(328, kickW(700)), K(336, kick(670), 'o'), K(346, kick(668)), K(356, idle(690)),
+            K(368, idle(660)), K(400, idle(600)), K(420, idle(570)), K(428, hit(570)), K(438, hit(740), 'o'), K(446, idle(790)), K(466, idle(790)),
+            K(470, fly(812, 10, 0), 'o'), K(480, fly(880, 200, 40), 'o'), K(490, fly(925, 150, 70)), K(500, fly(955, 30, 88)),
+            K(504, down(965)), K(509, down(968, -120)), K(514, down(972), 'o'), K(700, down(972)),
+          ];
+
+          // ---------- Event: hit, damage, efek ----------
+          const Y = (o: number) => GROUND - o;
+          export const EVENTS: GameEvent[] = [
+            {t: 112, x: 672, y: Y(330), v: 'B', power: 0.7, dmg: 10, label: 'POW!', sfx: 'punch'},
+            {t: 146, x: 462, y: Y(190), v: 'A', power: 0.9, dmg: 12, label: 'WHAM!', sfx: 'kick'},
+            {t: 204, x: 618, y: Y(285), v: 'B', power: 1.1, dmg: 22, label: 'BAM!', sfx: 'kick'},
+            {t: 262, x: 540, y: Y(325), v: 'both', power: 1.3, dmg: 10, label: 'CLASH!', sfx: 'clash', col: '#ffffff'},
+            {t: 294, x: 690, y: Y(290), v: 'B', power: 0.45, dmg: 2, sfx: 'block', col: '#9be7ff'},
+            {t: 306, x: 690, y: Y(290), v: 'B', power: 0.45, dmg: 2, sfx: 'block', col: '#9be7ff'},
+            {t: 318, x: 690, y: Y(290), v: 'B', power: 0.5, dmg: 2, sfx: 'block', col: '#9be7ff'},
+            {t: 336, x: 492, y: Y(190), v: 'A', power: 1.1, dmg: 45, label: 'BOOM!', sfx: 'boom'},
+            {t: 428, x: 240, y: Y(190), v: null, power: 1.4, dmg: 0, label: 'RAGE!', sfx: 'big', star: false},
+            {t: 468, x: 768, y: Y(300), v: 'B', power: 2.2, dmg: 52, label: 'SMASH!', sfx: 'big', col: '#ffffff'},
+          ];
+
+          export const DUST = [{t: 232, x: 790, s: 1}, {t: 362, x: 250, s: 1}, {t: 494, x: 650, s: 0.9}, {t: 504, x: 965, s: 1.5}];
+
+          export const SFX: {t: number; n: string; v?: number}[] = [
+            {t: 4, n: 'whoosh', v: 0.6}, {t: 58, n: 'gong'},
+            ...EVENTS.map((e) => ({t: e.t, n: e.sfx})),
+            ...[108, 141, 183, 199, 257, 291, 303, 315, 331].map((t) => ({t, n: 'whoosh', v: 0.7})),
+            ...[372, 392, 410].map((t) => ({t, n: 'heart', v: 0.9})),
+            {t: 416, n: 'rise'}, {t: 452, n: 'dash'},
+            {t: 232, n: 'thud', v: 0.6}, {t: 362, n: 'thud', v: 0.7}, {t: 494, n: 'thud', v: 0.5}, {t: 504, n: 'thud'}, {t: 509, n: 'thud', v: 0.5},
+            {t: 530, n: 'win'},
+          ];
+
+          // ---------- Interpolasi pose ----------
+          const ease = (x: number, e: string) => (e === 'o' ? 1 - (1 - x) ** 3 : e === 'i' ? x ** 3 : x < 0.5 ? 4 * x ** 3 : 1 - (-2 * x + 2) ** 3 / 2);
+          const L = (a: number, b: number, u: number) => a + (b - a) * u;
+          const L2 = (a: [number, number], b: [number, number], u: number): [number, number] => [L(a[0], b[0], u), L(a[1], b[1], u)];
+          const mix = (a: Pose, b: Pose, u: number): Pose => ({
+            x: L(a.x, b.x, u), y: L(a.y, b.y, u), l: L(a.l, b.l, u), rot: L(a.rot, b.rot, u),
+            a: L2(a.a, b.a, u), b: L2(a.b, b.b, u), c: L2(a.c, b.c, u), d: L2(a.d, b.d, u),
+          });
+          export const poseAt = (keys: Key[], t: number): Pose => {
+            if (t <= keys[0].t) return keys[0].p;
+            for (let i = 1; i < keys.length; i++) {
+              if (t <= keys[i].t) {
+                const k0 = keys[i - 1], k1 = keys[i];
+                return mix(k0.p, k1.p, ease((t - k0.t) / (k1.t - k0.t), k1.e ?? 'io'));
+              }
+            }
+            return keys[keys.length - 1].p;
+          };
+
+          // ---------- Slow-motion finisher: sim [452..474] diputar 0.3x ----------
+          const SA = 452, SB = 474, SK = 0.3;
+          const REAL = (SB - SA) / SK, EXTRA = REAL - (SB - SA);
+          export const simTime = (f: number) => (f < SA ? f : f < SA + REAL ? SA + (f - SA) * SK : f - EXTRA);
+          export const realFrame = (t: number) => (t < SA ? t : t < SB ? SA + (t - SA) / SK : t + EXTRA);
+          EOF_FILE
+          cat > src/Fight.tsx <<'EOF_FILE'
+          import React from 'react';
+          import {AbsoluteFill, Audio, Sequence, interpolate as I, random, staticFile, useCurrentFrame} from 'remotion';
+          import {loadFont} from '@remotion/google-fonts/Bangers';
+          import {GROUND, Pose, Stickman} from './stickman';
+          import {A_KEYS, B_KEYS, DUST, EVENTS, GameEvent, SFX, poseAt, realFrame, simTime} from './choreo';
+
+          const {fontFamily} = loadFont();
+          const C = {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'} as const;
+          const BLUE = '#38bdf8', RED = '#fb7185';
+          const inR = (t: number, r: number[][]) => r.some(([a, b]) => t >= a && t <= b);
+
+          // ---------- Latar kota malam ----------
+          const mk = (seed: string, n: number, x0: number, h0: number, h1: number) => {
+            let x = x0;
+            const out: {x: number; w: number; h: number; win: {x: number; y: number}[]}[] = [];
+            for (let i = 0; i < n; i++) {
+              const w = 90 + random(`${seed}w${i}`) * 90, h = h0 + random(`${seed}h${i}`) * (h1 - h0);
+              const win: {x: number; y: number}[] = [];
+              for (let r = 0; r < 9; r++) for (let c = 0; c < Math.floor(w / 28); c++) if (random(`${seed}${i}-${r}-${c}`) > 0.72) win.push({x: x + 10 + c * 28, y: GROUND - h + 20 + r * 36});
+              out.push({x, w, h, win});
+              x += w - 8;
+            }
+            return out;
+          };
+          const FAR = mk('f', 16, -420, 300, 680), NEAR = mk('n', 12, -460, 200, 420);
+
+          const Bg: React.FC<{cx: number; f: number}> = ({cx, f}) => {
+            const off = (k: number) => (cx - 540) * k;
+            return (
+              <g>
+                <rect x={-600} y={-600} width={2280} height={3000} fill="url(#sky)" />
+                {Array.from({length: 70}, (_, i) => (
+                  <circle key={i} cx={-300 + random(`sx${i}`) * 1680} cy={random(`sy${i}`) * 900} r={1 + random(`sr${i}`) * 2} fill="#fff" opacity={0.3 + 0.5 * Math.abs(Math.sin(f / 20 + i))} />
+                ))}
+                <g transform={`translate(${off(0.05)} 0)`}>
+                  <circle cx={780} cy={560} r={280} fill="#ff9a5a" opacity={0.1} />
+                  <circle cx={780} cy={560} r={160} fill="url(#moon)" />
+                </g>
+                <g transform={`translate(${off(0.15)} 0)`}>
+                  {FAR.map((b, i) => (
+                    <g key={i}>
+                      <rect x={b.x} y={GROUND - b.h} width={b.w} height={b.h + 20} fill="#170b2e" />
+                      {b.win.map((w, j) => <rect key={j} x={w.x} y={w.y} width={10} height={14} fill="#ffcf6b" opacity={0.55} />)}
+                    </g>
+                  ))}
+                </g>
+                <g transform={`translate(${off(0.35)} 0)`}>
+                  {NEAR.map((b, i) => <rect key={i} x={b.x} y={GROUND - b.h} width={b.w} height={b.h + 20} fill="#0b0618" />)}
+                </g>
+                <rect x={-600} y={GROUND} width={2280} height={1200} fill="url(#ground)" />
+                <rect x={-600} y={GROUND - 3} width={2280} height={6} fill="#ff5ea8" opacity={0.85} style={{filter: 'drop-shadow(0 0 10px #ff5ea8)'}} />
+                {Array.from({length: 8}, (_, i) => <line key={i} x1={-600} x2={1680} y1={GROUND + (i + 1) ** 2 * 8} y2={GROUND + (i + 1) ** 2 * 8} stroke="#fff" strokeOpacity={0.07} strokeWidth={2} />)}
+                {Array.from({length: 17}, (_, k) => <line key={k} x1={540 + (k - 8) * 60} y1={GROUND} x2={540 + (k - 8) * 420} y2={GROUND + 520} stroke="#fff" strokeOpacity={0.05} strokeWidth={2} />)}
+                {Array.from({length: 28}, (_, i) => {
+                  const r = random(`em${i}`);
+                  const y = GROUND + 100 - ((f * (1 + r * 2) + r * 1000) % 1500);
+                  return <circle key={i} cx={random(`ex${i}`) * 1500 - 200 + Math.sin(f / 15 + i) * 20} cy={y} r={2 + r * 3} fill="#ffb25a" opacity={0.5} />;
+                })}
+              </g>
+            );
+          };
+
+          // ---------- Efek ----------
+          const Txt: React.FC<{x: number; y: number; size: number; fill: string; stroke?: string; rot?: number; scale?: number; op?: number; children: string}> = ({x, y, size, fill, stroke = '#000', rot = 0, scale = 1, op = 1, children}) => (
+            <text x={x} y={y} fontSize={size} fontFamily={fontFamily} fill={fill} stroke={stroke} strokeWidth={size * 0.1} paintOrder="stroke" strokeLinejoin="round" textAnchor="middle" opacity={op}
+              transform={`rotate(${rot} ${x} ${y}) translate(${x} ${y}) scale(${scale}) translate(${-x} ${-y})`}>
+              {children}
+            </text>
+          );
+
+          const FX: React.FC<{e: GameEvent; t: number}> = ({e, t}) => {
+            const l = t - e.t;
+            if (l < 0 || l > 34) return null;
+            const {x, y, power: p} = e;
+            const R = (50 + 45 * p) * I(l, [0, 3, 10], [0.3, 1, 1.25], C);
+            const star = Array.from({length: 24}, (_, i) => {
+              const r = (i % 2 ? 0.45 : 1) * R * (0.8 + 0.4 * random(`st${e.t}-${i}`));
+              const a = (i * Math.PI) / 12;
+              return `${x + Math.cos(a) * r},${y + Math.sin(a) * r}`;
+            }).join(' ');
+            const lx = Math.min(880, Math.max(200, x));
+            return (
+              <g>
+                {e.star !== false && <polygon points={star} fill={e.col ?? '#fff3a0'} stroke="#ff8a00" strokeWidth={6} opacity={I(l, [0, 9, 13], [1, 1, 0], C)} />}
+                {Array.from({length: 12}, (_, i) => {
+                  const a = random(`sp${e.t}-${i}`) * Math.PI * 2;
+                  const d0 = I(l, [0, 14], [20, 110 + random(`sd${e.t}-${i}`) * (100 + 60 * p)], C);
+                  const len = 34 * (1 - l / 16);
+                  if (len <= 0) return null;
+                  return <line key={i} x1={x + Math.cos(a) * d0} y1={y + Math.sin(a) * d0} x2={x + Math.cos(a) * (d0 + len)} y2={y + Math.sin(a) * (d0 + len)} stroke="#fff" strokeWidth={5} strokeLinecap="round" />;
+          
